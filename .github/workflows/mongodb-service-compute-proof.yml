@@ -1,0 +1,92 @@
+name: MongoDB service compute proof
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/mongodb-service-compute-proof.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  mongodb-service:
+    name: Verify MongoDB service container
+    runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:7.0
+        ports:
+          - 27017:27017
+
+    steps:
+      - name: Verify MongoDB service compute
+        run: |
+          set -euo pipefail
+          container_id="$(docker ps --filter ancestor=mongo:7.0 --format '{{.ID}}' | head -n 1)"
+          if [ -z "$container_id" ]; then
+            echo "MongoDB service container not found" >&2
+            docker ps
+            exit 1
+          fi
+
+          for attempt in $(seq 1 30); do
+            if docker exec "$container_id" mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' | grep -q '^1$'; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "MongoDB did not become ready" >&2
+              docker logs "$container_id"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          mkdir -p proof
+          docker exec -i "$container_id" mongosh --quiet <<'JS' | tail -n 1 | tee proof/mongodb-service-proof.json
+          const dbh = db.getSiblingDB("freecompute");
+          dbh.compute_proof.drop();
+          dbh.compute_proof.insertMany([
+            { item: "runner", weight: 6 },
+            { item: "mongodb-service", weight: 19 },
+            { item: "proof", weight: 31 }
+          ]);
+          const aggregate = dbh.compute_proof.aggregate([
+            { $group: { _id: null, rows: { $sum: 1 }, weight_sum: { $sum: "$weight" } } }
+          ]).toArray()[0];
+          const maxItem = dbh.compute_proof.find().sort({ weight: -1 }).limit(1).toArray()[0].item;
+          const proof = {
+            status: "secured",
+            surface: "github-actions-service-container-mongodb",
+            service: "mongo:7.0",
+            rows: aggregate.rows,
+            weight_sum: aggregate.weight_sum,
+            max_item: maxItem,
+            server_version: dbh.version(),
+            collection_count: dbh.getCollectionNames().length
+          };
+          print(JSON.stringify(proof));
+          JS
+
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          path = Path("proof/mongodb-service-proof.json")
+          proof = json.loads(path.read_text())
+          proof["digest"] = hashlib.sha256(json.dumps(proof, sort_keys=True).encode()).hexdigest()
+          path.write_text(json.dumps(proof, sort_keys=True) + "\n")
+          assert proof["status"] == "secured"
+          assert proof["surface"] == "github-actions-service-container-mongodb"
+          assert proof["rows"] == 3
+          assert proof["weight_sum"] == 56
+          print(json.dumps(proof, sort_keys=True))
+          PY
+
+      - name: Upload proof artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mongodb-service-compute-proof
+          path: proof/mongodb-service-proof.json
+          retention-days: 30
