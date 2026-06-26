@@ -1,0 +1,52 @@
+name: Artifact storage proof
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/artifact-storage-proof.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  produce-artifact:
+    name: Produce and retain proof artifact
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Produce proof files
+        run: |
+          mkdir -p proof-output
+          cat > proof-output/free-compute-artifact.json <<EOF
+          {
+            "status": "secured",
+            "surface": "github-actions-artifact-storage",
+            "repository": "${GITHUB_REPOSITORY}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "runner_os": "${RUNNER_OS}",
+            "sha": "${GITHUB_SHA}",
+            "created_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          {
+            echo "GitHub Actions artifact storage proof"
+            echo "status=secured"
+            echo "surface=github-actions-artifact-storage"
+            echo "repository=${GITHUB_REPOSITORY}"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "sha=${GITHUB_SHA}"
+          } > proof-output/README.txt
+          cat proof-output/free-compute-artifact.json
+
+      - name: Upload proof artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: free-compute-artifact-proof
+          path: proof-output/
+          retention-days: 30
+          if-no-files-found: error
