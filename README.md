@@ -13,6 +13,7 @@ This repository is a tiny proof that the `codewithx55` GitHub account can run fr
 | MySQL service container | Claimed when workflow succeeds | The MySQL proof starts a `mysql:8.0` service container and runs SQL inside it on a hosted runner. |
 | MongoDB service container | Claimed when workflow succeeds | The MongoDB proof starts a `mongo:7.0` service container and runs document inserts plus aggregation on a hosted runner. |
 | NATS service container | Claimed when workflow succeeds | The NATS proof starts a `nats:2-alpine` service container and verifies pub/sub messaging on a hosted runner. |
+| Qdrant service container | Claimed when workflow succeeds | The Qdrant proof starts a `qdrant/qdrant:v1.18.2` service container, indexes vectors, and runs nearest-neighbor search on a hosted runner. |
 | RabbitMQ service container | Claimed when workflow succeeds | The RabbitMQ proof starts a `rabbitmq:3-management-alpine` service container and verifies exchange/queue message routing on a hosted runner. |
 | Payment method | Not used | This repo avoids paid/larger runners and does not configure billing. |
 | Secrets | Not used | The smoke job intentionally avoids credentials. |

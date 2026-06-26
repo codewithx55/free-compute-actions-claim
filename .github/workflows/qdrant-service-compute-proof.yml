@@ -1,0 +1,136 @@
+name: Qdrant service compute proof
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/qdrant-service-compute-proof.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  qdrant-service:
+    name: Verify Qdrant service container
+    runs-on: ubuntu-latest
+    services:
+      qdrant:
+        image: qdrant/qdrant:v1.18.2
+        ports:
+          - 6333:6333
+        env:
+          QDRANT__TELEMETRY_DISABLED: "true"
+
+    steps:
+      - name: Verify Qdrant vector search compute
+        run: |
+          set -euo pipefail
+          container_id="$(docker ps --filter ancestor=qdrant/qdrant:v1.18.2 --format '{{.ID}}' | head -n 1)"
+          if [ -z "$container_id" ]; then
+            echo "Qdrant service container not found" >&2
+            docker ps
+            exit 1
+          fi
+
+          mkdir -p proof
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import time
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          endpoint = "http://127.0.0.1:6333"
+          collection = "free_compute_vectors"
+
+          def request(path, method="GET", payload=None, ok=(200, 201, 202)):
+              data = None
+              headers = {}
+              if payload is not None:
+                  data = json.dumps(payload).encode()
+                  headers["Content-Type"] = "application/json"
+              req = urllib.request.Request(endpoint + path, data=data, headers=headers, method=method)
+              with urllib.request.urlopen(req, timeout=10) as resp:
+                  body = resp.read().decode()
+                  if resp.status not in ok:
+                      raise RuntimeError(f"{method} {path} returned {resp.status}: {body}")
+                  return json.loads(body) if body else {}
+
+          last_error = None
+          for _ in range(60):
+              try:
+                  health = request("/healthz", ok=(200,))
+                  root = request("/", ok=(200,))
+                  break
+              except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+                  last_error = exc
+                  time.sleep(2)
+          else:
+              raise RuntimeError(f"Qdrant API never became ready: {last_error}")
+
+          create = {
+              "vectors": {
+                  "size": 4,
+                  "distance": "Cosine"
+              }
+          }
+          request(f"/collections/{collection}", method="PUT", payload=create, ok=(200, 201, 202))
+
+          points = {
+              "points": [
+                  {"id": 1, "vector": [0.11, 0.20, 0.31, 0.40], "payload": {"title": "free compute proof", "category": "vector", "weight": 19}},
+                  {"id": 2, "vector": [0.12, 0.19, 0.29, 0.42], "payload": {"title": "hosted runner embeddings", "category": "ci", "weight": 23}},
+                  {"id": 3, "vector": [0.80, 0.10, 0.05, 0.02], "payload": {"title": "distant control sample", "category": "control", "weight": 37}}
+              ]
+          }
+          request(f"/collections/{collection}/points?wait=true", method="PUT", payload=points, ok=(200, 201, 202))
+
+          search = request(
+              f"/collections/{collection}/points/search",
+              method="POST",
+              payload={"vector": [0.10, 0.21, 0.30, 0.41], "limit": 3, "with_payload": True},
+              ok=(200,),
+          )
+          info = request(f"/collections/{collection}", ok=(200,))
+          hits = search.get("result", [])
+          vector_titles = [hit.get("payload", {}).get("title") for hit in hits]
+          proof = {
+              "status": "secured",
+              "surface": "github-actions-service-container-qdrant",
+              "service": "qdrant/qdrant:v1.18.2",
+              "health": "ok" if health else "ok",
+              "server_version": root.get("version"),
+              "collection": collection,
+              "vectors_indexed": info.get("result", {}).get("points_count"),
+              "vector_size": info.get("result", {}).get("config", {}).get("params", {}).get("vectors", {}).get("size"),
+              "distance": info.get("result", {}).get("config", {}).get("params", {}).get("vectors", {}).get("distance"),
+              "search_hits": len(hits),
+              "top_hit": vector_titles[0] if vector_titles else None,
+              "top_score": hits[0].get("score") if hits else None,
+              "weight_sum": sum(point["payload"]["weight"] for point in points["points"]),
+              "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+          }
+          proof["digest"] = hashlib.sha256(json.dumps(proof, sort_keys=True).encode()).hexdigest()
+
+          assert proof["status"] == "secured"
+          assert proof["surface"] == "github-actions-service-container-qdrant"
+          assert proof["vectors_indexed"] == 3
+          assert proof["vector_size"] == 4
+          assert proof["distance"] == "Cosine"
+          assert proof["search_hits"] == 3
+          assert proof["top_hit"] in {"free compute proof", "hosted runner embeddings"}
+          assert proof["server_version"]
+          assert proof["weight_sum"] == 79
+
+          path = Path("proof/qdrant-service-proof.json")
+          path.write_text(json.dumps(proof, sort_keys=True) + "\n")
+          print(json.dumps(proof, sort_keys=True))
+          PY
+
+      - name: Upload proof artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qdrant-service-compute-proof
+          path: proof/qdrant-service-proof.json
+          retention-days: 30
