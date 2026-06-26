@@ -1,0 +1,58 @@
+name: Artifact attestation proof
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/artifact-attestation-proof.yml"
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+  attestations: write
+
+jobs:
+  attest-proof:
+    name: Produce and attest proof artifact
+    runs-on: ubuntu-latest
+    steps:
+      - name: Produce proof file
+        run: |
+          set -euo pipefail
+          mkdir -p attestation-proof
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import time
+
+          proof = {
+              "status": "secured",
+              "surface": "github-artifact-attestation",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "sha": os.environ["GITHUB_SHA"],
+              "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+          }
+          proof["payload_sha256"] = hashlib.sha256(
+              json.dumps(proof, sort_keys=True).encode()
+          ).hexdigest()
+          with open("attestation-proof/proof.json", "w") as f:
+              json.dump(proof, f, sort_keys=True)
+              f.write("\n")
+          print(json.dumps(proof, sort_keys=True))
+          PY
+
+      - name: Upload proof artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: attestation-proof
+          path: attestation-proof/proof.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attest proof artifact
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: attestation-proof/proof.json
