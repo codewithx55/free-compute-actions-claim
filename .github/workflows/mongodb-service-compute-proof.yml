@@ -31,7 +31,7 @@ jobs:
           fi
 
           for attempt in $(seq 1 30); do
-            if docker exec "$container_id" mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' | grep -q '^1$'; then
+            if docker exec "$container_id" mongosh --quiet 'mongodb://127.0.0.1:27017/admin' --eval 'db.runCommand({ ping: 1 }).ok' 2>/dev/null | tr -d '\r' | grep -qx '1'; then
               break
             fi
             if [ "$attempt" -eq 30 ]; then
@@ -43,7 +43,7 @@ jobs:
           done
 
           mkdir -p proof
-          docker exec -i "$container_id" mongosh --quiet <<'JS' | tail -n 1 | tee proof/mongodb-service-proof.json
+          cat > /tmp/mongodb-service-proof.js <<'JS'
           const dbh = db.getSiblingDB("freecompute");
           dbh.compute_proof.drop();
           dbh.compute_proof.insertMany([
@@ -67,6 +67,8 @@ jobs:
           };
           print(JSON.stringify(proof));
           JS
+          docker cp /tmp/mongodb-service-proof.js "$container_id":/tmp/mongodb-service-proof.js
+          docker exec "$container_id" mongosh --quiet 'mongodb://127.0.0.1:27017/freecompute' /tmp/mongodb-service-proof.js | tail -n 1 | tee proof/mongodb-service-proof.json
 
           python3 - <<'PY'
           import hashlib
