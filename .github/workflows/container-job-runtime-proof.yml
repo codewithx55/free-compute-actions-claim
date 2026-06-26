@@ -1,0 +1,60 @@
+name: Container job runtime proof
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/container-job-runtime-proof.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  python-container-runtime:
+    name: Verify Python job container runtime
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.12-slim
+    timeout-minutes: 10
+
+    steps:
+      - name: Execute proof inside job container
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import platform
+          import shutil
+          import time
+
+          started = time.time()
+          digest = "container-job-runtime"
+          for index in range(150_000):
+              digest = hashlib.sha256(f"{digest}:{index}".encode()).hexdigest()
+
+          payload = {
+              "status": "secured",
+              "surface": "github-actions-container-job-python",
+              "container_image": "python:3.12-slim",
+              "in_container": pathlib.Path("/.dockerenv").exists(),
+              "github_repository": os.environ.get("GITHUB_REPOSITORY"),
+              "runner_os": os.environ.get("RUNNER_OS"),
+              "runner_arch": os.environ.get("RUNNER_ARCH"),
+              "python": platform.python_version(),
+              "machine": platform.machine(),
+              "platform": platform.platform(),
+              "cpu_count": os.cpu_count(),
+              "disk_free_gb": round(shutil.disk_usage(".").free / (1024 ** 3), 2),
+              "benchmark_seconds": round(time.time() - started, 4),
+              "digest_prefix": digest[:16],
+              "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+          }
+          print(json.dumps(payload, indent=2, sort_keys=True))
+
+          assert payload["status"] == "secured"
+          assert payload["surface"] == "github-actions-container-job-python"
+          assert payload["in_container"] is True
+          assert payload["python"].startswith("3.12.")
+          PY
