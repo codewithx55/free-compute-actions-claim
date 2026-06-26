@@ -1,0 +1,135 @@
+name: Meilisearch service compute proof
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/meilisearch-service-compute-proof.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  meilisearch-service:
+    name: Verify Meilisearch service container
+    runs-on: ubuntu-latest
+    services:
+      meilisearch:
+        image: getmeili/meilisearch:v1.48.2
+        env:
+          MEILI_ENV: development
+          MEILI_NO_ANALYTICS: "true"
+        ports:
+          - 7700:7700
+
+    steps:
+      - name: Verify Meilisearch indexing compute
+        run: |
+          set -euo pipefail
+          container_id="$(docker ps --filter ancestor=getmeili/meilisearch:v1.48.2 --format '{{.ID}}' | head -n 1)"
+          if [ -z "$container_id" ]; then
+            echo "Meilisearch service container not found" >&2
+            docker ps
+            exit 1
+          fi
+
+          mkdir -p proof
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import time
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          endpoint = "http://127.0.0.1:7700"
+
+          def request(path, method="GET", payload=None, ok=(200, 201, 202, 204, 404)):
+              data = None
+              headers = {}
+              if payload is not None:
+                  data = json.dumps(payload).encode()
+                  headers["Content-Type"] = "application/json"
+              req = urllib.request.Request(endpoint + path, data=data, headers=headers, method=method)
+              with urllib.request.urlopen(req, timeout=10) as resp:
+                  body = resp.read().decode()
+                  if resp.status not in ok:
+                      raise RuntimeError(f"{method} {path} returned {resp.status}: {body}")
+                  return json.loads(body) if body else {}
+
+          last_error = None
+          for _ in range(60):
+              try:
+                  health = request("/health", ok=(200,))
+                  if health.get("status") == "available":
+                      break
+              except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+                  last_error = exc
+                  time.sleep(2)
+          else:
+              raise RuntimeError(f"Meilisearch API never became ready: {last_error}")
+
+          def wait_task(task_uid):
+              for _ in range(60):
+                  task = request(f"/tasks/{task_uid}", ok=(200,))
+                  if task.get("status") == "succeeded":
+                      return task
+                  if task.get("status") in {"failed", "canceled"}:
+                      raise RuntimeError(f"Task {task_uid} did not succeed: {task}")
+                  time.sleep(1)
+              raise RuntimeError(f"Task {task_uid} timed out")
+
+          deleted = request("/indexes/free_compute", method="DELETE", ok=(200, 202, 204, 404))
+          if "taskUid" in deleted:
+              wait_task(deleted["taskUid"])
+
+          created = request("/indexes", method="POST", payload={"uid": "free_compute", "primaryKey": "id"}, ok=(200, 201, 202))
+          wait_task(created["taskUid"])
+
+          docs = [
+              {"id": 1, "title": "free compute proof", "category": "search", "weight": 17},
+              {"id": 2, "title": "hosted runner indexing", "category": "ci", "weight": 29},
+              {"id": 3, "title": "meilisearch query engine", "category": "search", "weight": 31},
+          ]
+          indexed = request("/indexes/free_compute/documents", method="POST", payload=docs, ok=(200, 202))
+          wait_task(indexed["taskUid"])
+
+          search = request("/indexes/free_compute/search", method="POST", payload={"q": "search", "limit": 5}, ok=(200,))
+          stats = request("/indexes/free_compute/stats", ok=(200,))
+          version = request("/version", ok=(200,))
+
+          hits = search.get("hits", [])
+          proof = {
+              "status": "secured",
+              "surface": "github-actions-service-container-meilisearch",
+              "service": "getmeili/meilisearch:v1.48.2",
+              "health": health["status"],
+              "server_version": version.get("pkgVersion"),
+              "documents_indexed": stats.get("numberOfDocuments"),
+              "search_query": "search",
+              "search_hits": len(hits),
+              "top_hit": hits[0]["title"] if hits else None,
+              "weight_sum": sum(item["weight"] for item in docs),
+              "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+          }
+          proof["digest"] = hashlib.sha256(json.dumps(proof, sort_keys=True).encode()).hexdigest()
+
+          assert proof["status"] == "secured"
+          assert proof["surface"] == "github-actions-service-container-meilisearch"
+          assert proof["health"] == "available"
+          assert proof["documents_indexed"] == 3
+          assert proof["search_hits"] >= 2
+          assert proof["server_version"]
+          assert proof["weight_sum"] == 77
+
+          path = Path("proof/meilisearch-service-proof.json")
+          path.write_text(json.dumps(proof, sort_keys=True) + "\n")
+          print(json.dumps(proof, sort_keys=True))
+          PY
+
+      - name: Upload proof artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: meilisearch-service-compute-proof
+          path: proof/meilisearch-service-proof.json
+          retention-days: 30

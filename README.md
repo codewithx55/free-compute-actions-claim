@@ -9,6 +9,7 @@ This repository is a tiny proof that the `codewithx55` GitHub account can run fr
 | ClickHouse service container | Claimed when workflow succeeds | The ClickHouse proof starts a `clickhouse/clickhouse-server:24.8-alpine` service container and runs analytical SQL on a hosted runner. |
 | GitHub-hosted Ubuntu runner | Claimed when workflow succeeds | Public repositories can use standard runners for free under GitHub's current billing docs. |
 | Memcached service container | Claimed when workflow succeeds | The Memcached proof starts a `memcached:1.6-alpine` service container and exercises the text protocol on a hosted runner. |
+| Meilisearch service container | Claimed when workflow succeeds | The Meilisearch proof starts a `getmeili/meilisearch:v1.48.2` service container, indexes documents, and runs search queries on a hosted runner. |
 | MySQL service container | Claimed when workflow succeeds | The MySQL proof starts a `mysql:8.0` service container and runs SQL inside it on a hosted runner. |
 | MongoDB service container | Claimed when workflow succeeds | The MongoDB proof starts a `mongo:7.0` service container and runs document inserts plus aggregation on a hosted runner. |
 | NATS service container | Claimed when workflow succeeds | The NATS proof starts a `nats:2-alpine` service container and verifies pub/sub messaging on a hosted runner. |
