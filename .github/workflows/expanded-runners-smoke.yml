@@ -1,0 +1,45 @@
+name: Expanded Runner Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/expanded-runners-smoke.yml"
+      - "scripts/smoke.py"
+
+permissions:
+  contents: read
+
+jobs:
+  prove-expanded-runner:
+    name: Prove ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-slim
+          - ubuntu-24.04-arm
+          - ubuntu-22.04-arm
+          - windows-11-arm
+          - macos-15-intel
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Runner identity
+        shell: bash
+        run: |
+          echo "RUNNER_OS=${RUNNER_OS}"
+          echo "RUNNER_ARCH=${RUNNER_ARCH}"
+          echo "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"
+
+      - name: Python smoke benchmark
+        run: python scripts/smoke.py
