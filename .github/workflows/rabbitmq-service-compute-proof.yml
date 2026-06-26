@@ -1,0 +1,131 @@
+name: RabbitMQ service compute proof
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/rabbitmq-service-compute-proof.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  rabbitmq-service:
+    name: Verify RabbitMQ service container
+    runs-on: ubuntu-latest
+    services:
+      rabbitmq:
+        image: rabbitmq:3-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: proof
+          RABBITMQ_DEFAULT_PASS: proofpass
+        ports:
+          - 5672:5672
+          - 15672:15672
+
+    steps:
+      - name: Verify RabbitMQ service compute
+        run: |
+          set -euo pipefail
+          container_id="$(docker ps --filter ancestor=rabbitmq:3-management-alpine --format '{{.ID}}' | head -n 1)"
+          if [ -z "$container_id" ]; then
+            echo "RabbitMQ service container not found" >&2
+            docker ps
+            exit 1
+          fi
+
+          mkdir -p proof
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import time
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          base = "http://127.0.0.1:15672/api"
+          auth = base64.b64encode(b"proof:proofpass").decode()
+
+          def request(method, path, payload=None):
+              data = None
+              headers = {
+                  "Authorization": f"Basic {auth}",
+                  "Content-Type": "application/json",
+              }
+              if payload is not None:
+                  data = json.dumps(payload).encode()
+              req = urllib.request.Request(base + path, data=data, method=method, headers=headers)
+              with urllib.request.urlopen(req, timeout=5) as resp:
+                  body = resp.read()
+                  if not body:
+                      return None
+                  return json.loads(body)
+
+          last_error = None
+          for _ in range(60):
+              try:
+                  overview = request("GET", "/overview")
+                  if overview and overview.get("rabbitmq_version"):
+                      break
+              except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+                  last_error = exc
+                  time.sleep(2)
+          else:
+              raise RuntimeError(f"RabbitMQ management API never became ready: {last_error}")
+
+          exchange = "free.compute.exchange"
+          queue = "free.compute.queue"
+          routing_key = "free.compute"
+          message = "secured"
+
+          request("PUT", f"/exchanges/%2F/{exchange}", {"type": "direct", "durable": False})
+          request("PUT", f"/queues/%2F/{queue}", {"durable": False, "auto_delete": False})
+          request("POST", f"/bindings/%2F/e/{exchange}/q/{queue}", {"routing_key": routing_key})
+          publish = request("POST", f"/exchanges/%2F/{exchange}/publish", {
+              "properties": {},
+              "routing_key": routing_key,
+              "payload": message,
+              "payload_encoding": "string",
+          })
+          get = request("POST", f"/queues/%2F/{queue}/get", {
+              "count": 1,
+              "ackmode": "ack_requeue_false",
+              "encoding": "auto",
+              "truncate": 50000,
+          })
+          queue_state = request("GET", f"/queues/%2F/{queue}")
+
+          proof = {
+              "status": "secured",
+              "surface": "github-actions-service-container-rabbitmq",
+              "service": "rabbitmq:3-management-alpine",
+              "rabbitmq_version": overview.get("rabbitmq_version"),
+              "exchange": exchange,
+              "queue": queue,
+              "routing_key": routing_key,
+              "publish_routed": bool(publish and publish.get("routed")),
+              "received_payload": get[0].get("payload") if get else None,
+              "messages_ready_after_get": queue_state.get("messages_ready"),
+              "message_stats": queue_state.get("message_stats", {}),
+              "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+          }
+          proof["digest"] = hashlib.sha256(json.dumps(proof, sort_keys=True).encode()).hexdigest()
+
+          assert proof["status"] == "secured"
+          assert proof["surface"] == "github-actions-service-container-rabbitmq"
+          assert proof["publish_routed"] is True
+          assert proof["received_payload"] == message
+          assert proof["rabbitmq_version"]
+
+          path = Path("proof/rabbitmq-service-proof.json")
+          path.write_text(json.dumps(proof, sort_keys=True) + "\n")
+          print(json.dumps(proof, sort_keys=True))
+          PY
+
+      - name: Upload proof artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rabbitmq-service-compute-proof
+          path: proof/rabbitmq-service-proof.json
+          retention-days: 30
