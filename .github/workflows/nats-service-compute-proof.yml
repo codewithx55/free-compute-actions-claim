@@ -1,0 +1,127 @@
+name: NATS service compute proof
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/nats-service-compute-proof.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  nats-service:
+    name: Verify NATS service container
+    runs-on: ubuntu-latest
+    services:
+      nats:
+        image: nats:2-alpine
+        ports:
+          - 4222:4222
+
+    steps:
+      - name: Verify NATS service compute
+        run: |
+          set -euo pipefail
+          container_id="$(docker ps --filter ancestor=nats:2-alpine --format '{{.ID}}' | head -n 1)"
+          if [ -z "$container_id" ]; then
+            echo "NATS service container not found" >&2
+            docker ps
+            exit 1
+          fi
+
+          mkdir -p proof
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import socket
+          import time
+          from pathlib import Path
+
+          def read_line(sock):
+              data = bytearray()
+              while not data.endswith(b"\r\n"):
+                  chunk = sock.recv(1)
+                  if not chunk:
+                      raise RuntimeError("connection closed")
+                  data.extend(chunk)
+              return bytes(data[:-2]).decode()
+
+          last_error = None
+          for _ in range(30):
+              try:
+                  with socket.create_connection(("127.0.0.1", 4222), timeout=2) as sock:
+                      info_line = read_line(sock)
+                      if info_line.startswith("INFO "):
+                          break
+              except OSError as exc:
+                  last_error = exc
+                  time.sleep(1)
+          else:
+              raise RuntimeError(f"NATS never became ready: {last_error}")
+
+          with socket.create_connection(("127.0.0.1", 4222), timeout=5) as sock:
+              info_line = read_line(sock)
+              if not info_line.startswith("INFO "):
+                  raise RuntimeError(f"expected INFO, got {info_line!r}")
+              info = json.loads(info_line.removeprefix("INFO "))
+              payload = b"secured"
+              sock.sendall(
+                  b'CONNECT {"verbose":false,"pedantic":false,"name":"free-compute-proof"}\r\n'
+                  b"SUB free.compute 1\r\n"
+                  + f"PUB free.compute {len(payload)}\r\n".encode()
+                  + payload
+                  + b"\r\nPING\r\n"
+              )
+
+              message_payload = None
+              pong_seen = False
+              deadline = time.time() + 5
+              while time.time() < deadline and (message_payload is None or not pong_seen):
+                  line = read_line(sock)
+                  if line == "PONG":
+                      pong_seen = True
+                      continue
+                  if line.startswith("MSG "):
+                      parts = line.split()
+                      size = int(parts[-1])
+                      body = b""
+                      while len(body) < size:
+                          body += sock.recv(size - len(body))
+                      trailer = sock.recv(2)
+                      if trailer != b"\r\n":
+                          raise RuntimeError("invalid NATS message trailer")
+                      message_payload = body.decode()
+
+              proof = {
+                  "status": "secured",
+                  "surface": "github-actions-service-container-nats",
+                  "service": "nats:2-alpine",
+                  "server_id": info.get("server_id"),
+                  "server_name": info.get("server_name"),
+                  "version": info.get("version"),
+                  "protocol": info.get("proto"),
+                  "subject": "free.compute",
+                  "payload": message_payload,
+                  "pong_seen": pong_seen,
+                  "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+              }
+              proof["digest"] = hashlib.sha256(json.dumps(proof, sort_keys=True).encode()).hexdigest()
+
+          assert proof["status"] == "secured"
+          assert proof["surface"] == "github-actions-service-container-nats"
+          assert proof["payload"] == "secured"
+          assert proof["pong_seen"] is True
+          assert proof["version"]
+
+          path = Path("proof/nats-service-proof.json")
+          path.write_text(json.dumps(proof, sort_keys=True) + "\n")
+          print(json.dumps(proof, sort_keys=True))
+          PY
+
+      - name: Upload proof artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nats-service-compute-proof
+          path: proof/nats-service-proof.json
+          retention-days: 30
