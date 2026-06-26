@@ -1,0 +1,61 @@
+name: Container Publish Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/container-publish-smoke.yml"
+      - "container/**"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/codewithx55/free-compute-actions-claim/proof
+
+jobs:
+  build-and-publish:
+    name: Build and publish proof container
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image
+        run: |
+          docker build \
+            --label org.opencontainers.image.revision=${GITHUB_SHA} \
+            --label org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+            -t "${IMAGE_NAME}:latest" \
+            -t "${IMAGE_NAME}:${GITHUB_SHA}" \
+            container
+
+      - name: Run image locally
+        run: docker run --rm "${IMAGE_NAME}:latest"
+
+      - name: Publish image
+        run: |
+          docker push "${IMAGE_NAME}:latest"
+          docker push "${IMAGE_NAME}:${GITHUB_SHA}"
+
+      - name: Emit proof
+        run: |
+          cat <<JSON
+          {
+            "status": "secured",
+            "surface": "github-actions-container-build-ghcr",
+            "image": "${IMAGE_NAME}:latest",
+            "repository": "${GITHUB_REPOSITORY}",
+            "sha": "${GITHUB_SHA}"
+          }
+          JSON
