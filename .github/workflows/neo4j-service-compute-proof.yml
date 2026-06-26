@@ -1,0 +1,145 @@
+name: Neo4j service compute proof
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/neo4j-service-compute-proof.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  neo4j-service:
+    name: Verify Neo4j service container
+    runs-on: ubuntu-latest
+    services:
+      neo4j:
+        image: neo4j:5.26-community
+        env:
+          NEO4J_AUTH: none
+          NEO4J_dbms_security_auth__enabled: "false"
+        ports:
+          - 7474:7474
+          - 7687:7687
+
+    steps:
+      - name: Verify Neo4j graph compute
+        run: |
+          set -euo pipefail
+          container_id="$(docker ps --filter ancestor=neo4j:5.26-community --format '{{.ID}}' | head -n 1)"
+          if [ -z "$container_id" ]; then
+            echo "Neo4j service container not found" >&2
+            docker ps
+            exit 1
+          fi
+
+          mkdir -p proof
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import time
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          endpoint = "http://127.0.0.1:7474"
+
+          def get(path, ok=(200,)):
+              req = urllib.request.Request(endpoint + path, method="GET")
+              with urllib.request.urlopen(req, timeout=10) as resp:
+                  body = resp.read().decode()
+                  if resp.status not in ok:
+                      raise RuntimeError(f"GET {path} returned {resp.status}: {body}")
+                  return json.loads(body) if body else {}
+
+          def cypher(statement, params=None):
+              payload = {"statements": [{"statement": statement, "parameters": params or {}}]}
+              data = json.dumps(payload).encode()
+              req = urllib.request.Request(
+                  endpoint + "/db/neo4j/tx/commit",
+                  data=data,
+                  headers={"Content-Type": "application/json"},
+                  method="POST",
+              )
+              with urllib.request.urlopen(req, timeout=15) as resp:
+                  body = resp.read().decode()
+                  result = json.loads(body)
+              if result.get("errors"):
+                  raise RuntimeError(result["errors"])
+              return result["results"][0]["data"] if result.get("results") else []
+
+          last_error = None
+          for _ in range(90):
+              try:
+                  root = get("/", ok=(200,))
+                  cypher("RETURN 1 AS ok")
+                  break
+              except (urllib.error.URLError, TimeoutError, ConnectionError, RuntimeError) as exc:
+                  last_error = exc
+                  time.sleep(2)
+          else:
+              raise RuntimeError(f"Neo4j API never became ready: {last_error}")
+
+          cypher("MATCH (n) DETACH DELETE n")
+          cypher("""
+          CREATE
+            (codex:Compute {name:'Codex', weight:13}),
+            (runner:Compute {name:'GitHub Actions runner', weight:21}),
+            (neo4j:Compute {name:'Neo4j service container', weight:34}),
+            (proof:Compute {name:'Proof artifact', weight:55}),
+            (codex)-[:SECURED {order:1}]->(runner),
+            (runner)-[:STARTED {order:2}]->(neo4j),
+            (neo4j)-[:EMITTED {order:3}]->(proof)
+          """)
+          counts = cypher("""
+          MATCH (n:Compute)
+          OPTIONAL MATCH ()-[r]->()
+          RETURN count(DISTINCT n) AS nodes, count(DISTINCT r) AS relationships, sum(n.weight) AS weight_sum
+          """)[0]["row"]
+          path_data = cypher("""
+          MATCH path = (:Compute {name:'Codex'})-[*1..4]->(:Compute {name:'Proof artifact'})
+          RETURN length(path) AS path_length, [node IN nodes(path) | node.name] AS path_names
+          ORDER BY path_length ASC
+          LIMIT 1
+          """)[0]["row"]
+          version_row = cypher("CALL dbms.components() YIELD name, versions, edition RETURN name, versions[0] AS version, edition")[0]["row"]
+
+          proof = {
+              "status": "secured",
+              "surface": "github-actions-service-container-neo4j",
+              "service": "neo4j:5.26-community",
+              "server_name": version_row[0],
+              "server_version": version_row[1],
+              "edition": version_row[2],
+              "nodes": counts[0],
+              "relationships": counts[1],
+              "weight_sum": counts[2],
+              "path_length": path_data[0],
+              "path_names": path_data[1],
+              "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+          }
+          proof["digest"] = hashlib.sha256(json.dumps(proof, sort_keys=True).encode()).hexdigest()
+
+          assert proof["status"] == "secured"
+          assert proof["surface"] == "github-actions-service-container-neo4j"
+          assert proof["nodes"] == 4
+          assert proof["relationships"] == 3
+          assert proof["weight_sum"] == 123
+          assert proof["path_length"] == 3
+          assert proof["path_names"][0] == "Codex"
+          assert proof["path_names"][-1] == "Proof artifact"
+          assert proof["server_version"]
+          assert proof["edition"].lower() == "community"
+
+          path = Path("proof/neo4j-service-proof.json")
+          path.write_text(json.dumps(proof, sort_keys=True) + "\n")
+          print(json.dumps(proof, sort_keys=True))
+          PY
+
+      - name: Upload proof artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: neo4j-service-compute-proof
+          path: proof/neo4j-service-proof.json
+          retention-days: 30
