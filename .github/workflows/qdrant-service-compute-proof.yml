@@ -44,7 +44,7 @@ jobs:
           endpoint = "http://127.0.0.1:6333"
           collection = "free_compute_vectors"
 
-          def request(path, method="GET", payload=None, ok=(200, 201, 202)):
+          def request(path, method="GET", payload=None, ok=(200, 201, 202), parse_json=True):
               data = None
               headers = {}
               if payload is not None:
@@ -55,12 +55,14 @@ jobs:
                   body = resp.read().decode()
                   if resp.status not in ok:
                       raise RuntimeError(f"{method} {path} returned {resp.status}: {body}")
+                  if not parse_json:
+                      return body
                   return json.loads(body) if body else {}
 
           last_error = None
           for _ in range(60):
               try:
-                  health = request("/healthz", ok=(200,))
+                  health = request("/healthz", ok=(200,), parse_json=False)
                   root = request("/", ok=(200,))
                   break
               except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
@@ -99,7 +101,7 @@ jobs:
               "status": "secured",
               "surface": "github-actions-service-container-qdrant",
               "service": "qdrant/qdrant:v1.18.2",
-              "health": "ok" if health else "ok",
+              "health": health.strip(),
               "server_version": root.get("version"),
               "collection": collection,
               "vectors_indexed": info.get("result", {}).get("points_count"),
@@ -115,6 +117,7 @@ jobs:
 
           assert proof["status"] == "secured"
           assert proof["surface"] == "github-actions-service-container-qdrant"
+          assert "healthz" in proof["health"].lower()
           assert proof["vectors_indexed"] == 3
           assert proof["vector_size"] == 4
           assert proof["distance"] == "Cosine"
