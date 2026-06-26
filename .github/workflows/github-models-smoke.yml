@@ -1,0 +1,32 @@
+name: GitHub Models Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/github-models-smoke.yml"
+      - "scripts/github_models_smoke.py"
+
+permissions:
+  contents: read
+  models: read
+
+jobs:
+  prove-model-inference:
+    name: Prove GitHub Models inference
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run inference smoke
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/github_models_smoke.py
