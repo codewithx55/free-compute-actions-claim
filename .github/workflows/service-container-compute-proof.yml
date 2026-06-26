@@ -1,0 +1,100 @@
+name: Service container compute proof
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/service-container-compute-proof.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  redis-service:
+    name: Verify Redis service container
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Verify service compute
+        run: |
+          python3 - <<'PY'
+          import json
+          import platform
+          import socket
+          import time
+
+          def encode_command(*parts):
+              encoded = [f"*{len(parts)}\r\n".encode()]
+              for part in parts:
+                  data = str(part).encode()
+                  encoded.append(f"${len(data)}\r\n".encode())
+                  encoded.append(data + b"\r\n")
+              return b"".join(encoded)
+
+          def read_line(sock):
+              data = bytearray()
+              while not data.endswith(b"\r\n"):
+                  chunk = sock.recv(1)
+                  if not chunk:
+                      raise RuntimeError("connection closed")
+                  data.extend(chunk)
+              return bytes(data[:-2])
+
+          def read_response(sock):
+              prefix = sock.recv(1)
+              if prefix == b"+":
+                  return read_line(sock).decode()
+              if prefix == b":":
+                  return int(read_line(sock))
+              if prefix == b"$":
+                  length = int(read_line(sock))
+                  if length == -1:
+                      return None
+                  payload = b""
+                  while len(payload) < length:
+                      payload += sock.recv(length - len(payload))
+                  trailer = sock.recv(2)
+                  if trailer != b"\r\n":
+                      raise RuntimeError("invalid bulk trailer")
+                  return payload.decode()
+              if prefix == b"-":
+                  raise RuntimeError(read_line(sock).decode())
+              raise RuntimeError(f"unknown RESP prefix: {prefix!r}")
+
+          with socket.create_connection(("127.0.0.1", 6379), timeout=10) as sock:
+              def command(*parts):
+                  sock.sendall(encode_command(*parts))
+                  return read_response(sock)
+
+              ping = command("PING")
+              set_status = command("SET", "free-compute", "secured")
+              value = command("GET", "free-compute")
+              counter = command("INCR", "proof-counter")
+
+          proof = {
+              "status": "secured",
+              "surface": "github-actions-service-container-redis",
+              "service": "redis:7-alpine",
+              "ping": ping,
+              "set_status": set_status,
+              "value": value,
+              "counter": counter,
+              "platform": platform.platform(),
+              "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+          }
+          print(json.dumps(proof, sort_keys=True))
+          assert proof["ping"] == "PONG"
+          assert proof["set_status"] == "OK"
+          assert proof["value"] == "secured"
+          assert proof["counter"] == 1
+          PY
