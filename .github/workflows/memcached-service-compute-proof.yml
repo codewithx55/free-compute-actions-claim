@@ -1,0 +1,116 @@
+name: Memcached service compute proof
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/memcached-service-compute-proof.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  memcached-service:
+    name: Verify Memcached service container
+    runs-on: ubuntu-latest
+    services:
+      memcached:
+        image: memcached:1.6-alpine
+        ports:
+          - 11211:11211
+
+    steps:
+      - name: Verify Memcached service compute
+        run: |
+          set -euo pipefail
+          container_id="$(docker ps --filter ancestor=memcached:1.6-alpine --format '{{.ID}}' | head -n 1)"
+          if [ -z "$container_id" ]; then
+            echo "Memcached service container not found" >&2
+            docker ps
+            exit 1
+          fi
+
+          mkdir -p proof
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import socket
+          import time
+          from pathlib import Path
+
+          def recv_until(sock, marker):
+              data = bytearray()
+              while marker not in data:
+                  chunk = sock.recv(4096)
+                  if not chunk:
+                      raise RuntimeError("connection closed")
+                  data.extend(chunk)
+              return bytes(data)
+
+          last_error = None
+          for _ in range(30):
+              try:
+                  with socket.create_connection(("127.0.0.1", 11211), timeout=2) as sock:
+                      sock.sendall(b"version\r\n")
+                      version_line = recv_until(sock, b"\r\n").decode().strip()
+                  break
+              except OSError as exc:
+                  last_error = exc
+                  time.sleep(1)
+          else:
+              raise RuntimeError(f"memcached never became ready: {last_error}")
+
+          with socket.create_connection(("127.0.0.1", 11211), timeout=5) as sock:
+              def command(raw, marker=b"\r\n"):
+                  sock.sendall(raw)
+                  return recv_until(sock, marker)
+
+              set_status = command(b"set freecompute 0 0 7\r\nsecured\r\n").decode().strip()
+              get_response = command(b"get freecompute\r\n", b"END\r\n").decode()
+              counter_status = command(b"set proof-counter 0 0 1\r\n1\r\n").decode().strip()
+              increment = command(b"incr proof-counter 4\r\n").decode().strip()
+              stats_response = command(b"stats\r\n", b"END\r\n").decode()
+
+          stats = {}
+          for line in stats_response.splitlines():
+              if line.startswith("STAT "):
+                  _, key, value = line.split(" ", 2)
+                  stats[key] = value
+
+          proof = {
+              "status": "secured",
+              "surface": "github-actions-service-container-memcached",
+              "service": "memcached:1.6-alpine",
+              "version": version_line,
+              "set_status": set_status,
+              "value": "secured" if "secured" in get_response else None,
+              "counter_status": counter_status,
+              "increment": int(increment),
+              "curr_items": int(stats.get("curr_items", "0")),
+              "cmd_get": int(stats.get("cmd_get", "0")),
+              "cmd_set": int(stats.get("cmd_set", "0")),
+              "bytes": int(stats.get("bytes", "0")),
+              "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+          }
+          proof["digest"] = hashlib.sha256(json.dumps(proof, sort_keys=True).encode()).hexdigest()
+
+          assert proof["status"] == "secured"
+          assert proof["surface"] == "github-actions-service-container-memcached"
+          assert proof["set_status"] == "STORED"
+          assert proof["value"] == "secured"
+          assert proof["counter_status"] == "STORED"
+          assert proof["increment"] == 5
+          assert proof["cmd_get"] >= 1
+          assert proof["cmd_set"] >= 2
+
+          path = Path("proof/memcached-service-proof.json")
+          path.write_text(json.dumps(proof, sort_keys=True) + "\n")
+          print(json.dumps(proof, sort_keys=True))
+          PY
+
+      - name: Upload proof artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: memcached-service-compute-proof
+          path: proof/memcached-service-proof.json
+          retention-days: 30
