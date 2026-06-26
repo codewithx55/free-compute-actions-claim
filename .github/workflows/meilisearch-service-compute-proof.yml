@@ -79,10 +79,6 @@ jobs:
                   time.sleep(1)
               raise RuntimeError(f"Task {task_uid} timed out")
 
-          deleted = request("/indexes/free_compute", method="DELETE", ok=(200, 202, 204, 404))
-          if "taskUid" in deleted:
-              wait_task(deleted["taskUid"])
-
           created = request("/indexes", method="POST", payload={"uid": "free_compute", "primaryKey": "id"}, ok=(200, 201, 202))
           wait_task(created["taskUid"])
 
