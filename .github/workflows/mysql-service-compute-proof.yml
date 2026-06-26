@@ -1,0 +1,81 @@
+name: MySQL service compute proof
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/mysql-service-compute-proof.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  mysql-service:
+    name: Verify MySQL service container
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: proofpass
+          MYSQL_DATABASE: freecompute
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pproofpass"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    steps:
+      - name: Verify MySQL service compute
+        run: |
+          set -euo pipefail
+          container_id="$(docker ps --filter ancestor=mysql:8.0 --format '{{.ID}}' | head -n 1)"
+          if [ -z "$container_id" ]; then
+            echo "MySQL service container not found" >&2
+            docker ps
+            exit 1
+          fi
+
+          proof="$(
+            docker exec -i "$container_id" mysql -uroot -pproofpass --database freecompute --batch --raw --skip-column-names <<'SQL' | tail -n 1
+          CREATE TABLE compute_proof (
+            id integer PRIMARY KEY AUTO_INCREMENT,
+            item varchar(64) NOT NULL,
+            weight integer NOT NULL
+          );
+          INSERT INTO compute_proof (item, weight)
+          VALUES ('runner', 5), ('mysql-service', 17), ('proof', 29);
+          SELECT JSON_OBJECT(
+            'status', 'secured',
+            'surface', 'github-actions-service-container-mysql',
+            'service', 'mysql:8.0',
+            'rows', (SELECT COUNT(*) FROM compute_proof),
+            'weight_sum', (SELECT SUM(weight) FROM compute_proof),
+            'max_item', (SELECT item FROM compute_proof ORDER BY weight DESC LIMIT 1),
+            'server_version', VERSION(),
+            'digest', SHA2(CONCAT(
+              'mysql-service|',
+              (SELECT COUNT(*) FROM compute_proof), '|',
+              (SELECT SUM(weight) FROM compute_proof), '|',
+              VERSION()
+            ), 256)
+          );
+          SQL
+          )"
+
+          mkdir -p proof
+          printf '%s\n' "$proof" | tee proof/mysql-service-proof.json
+          python3 -m json.tool proof/mysql-service-proof.json >/dev/null
+          grep -q '"status": "secured"' proof/mysql-service-proof.json
+          grep -q '"surface": "github-actions-service-container-mysql"' proof/mysql-service-proof.json
+          grep -q '"rows": 3' proof/mysql-service-proof.json
+          grep -q '"weight_sum": 51' proof/mysql-service-proof.json
+
+      - name: Upload proof artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mysql-service-compute-proof
+          path: proof/mysql-service-proof.json
+          retention-days: 30
