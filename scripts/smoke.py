@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import platform
+import shutil
 import time
 
 
@@ -19,6 +20,10 @@ def main():
         "github_repository": os.environ.get("GITHUB_REPOSITORY"),
         "python": platform.python_version(),
         "machine": platform.machine(),
+        "platform": platform.platform(),
+        "cpu_count": os.cpu_count(),
+        "disk_total_gb": round(shutil.disk_usage(".").total / (1024 ** 3), 2),
+        "disk_free_gb": round(shutil.disk_usage(".").free / (1024 ** 3), 2),
         "benchmark_seconds": round(elapsed, 4),
         "digest_prefix": digest[:16],
     }
@@ -27,4 +32,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
