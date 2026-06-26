@@ -1,0 +1,90 @@
+name: Cache restore proof
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/cache-restore-proof.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  cache-proof:
+    name: Save or restore proof cache
+    runs-on: ubuntu-latest
+    env:
+      CACHE_KEY: free-compute-cache-proof-v1
+      CACHE_DIR: cache-proof
+
+    steps:
+      - name: Restore proof cache
+        id: cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CACHE_DIR }}
+          key: ${{ env.CACHE_KEY }}
+
+      - name: Create proof on cache miss
+        if: steps.cache-restore.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE_DIR"
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import time
+
+          payload = {
+              "status": "secured",
+              "surface": "github-actions-cache-save-restore",
+              "phase": "cache-save",
+              "cache_key": os.environ["CACHE_KEY"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "sha": os.environ["GITHUB_SHA"],
+              "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+          }
+          payload["payload_sha256"] = hashlib.sha256(
+              json.dumps(payload, sort_keys=True).encode()
+          ).hexdigest()
+          with open(os.path.join(os.environ["CACHE_DIR"], "proof.json"), "w") as f:
+              json.dump(payload, f, sort_keys=True)
+              f.write("\n")
+          print(json.dumps(payload, sort_keys=True))
+          PY
+
+      - name: Save proof cache
+        if: steps.cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CACHE_DIR }}
+          key: ${{ env.CACHE_KEY }}
+
+      - name: Verify proof cache state
+        run: |
+          set -euo pipefail
+          test -f "$CACHE_DIR/proof.json"
+          python3 - <<'PY'
+          import json
+          import os
+
+          with open(os.path.join(os.environ["CACHE_DIR"], "proof.json")) as f:
+              cached = json.load(f)
+          proof = {
+              "status": "secured",
+              "surface": "github-actions-cache-save-restore",
+              "phase": "cache-restore" if os.environ["CACHE_HIT"] == "true" else "cache-save",
+              "cache_hit": os.environ["CACHE_HIT"],
+              "cache_key": os.environ["CACHE_KEY"],
+              "cached_run_id": cached["run_id"],
+              "cached_payload_sha256": cached["payload_sha256"],
+              "current_run_id": os.environ["GITHUB_RUN_ID"],
+          }
+          print(json.dumps(proof, sort_keys=True))
+          assert cached["status"] == "secured"
+          assert cached["surface"] == "github-actions-cache-save-restore"
+          PY
+        env:
+          CACHE_HIT: ${{ steps.cache-restore.outputs.cache-hit || 'false' }}
