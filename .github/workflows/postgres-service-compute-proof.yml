@@ -1,0 +1,66 @@
+name: PostgreSQL service compute proof
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/postgres-service-compute-proof.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-service:
+    name: Verify PostgreSQL service container
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: freecompute
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d freecompute"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Verify SQL database compute
+        run: |
+          set -euo pipefail
+          container_id="$(docker ps --filter ancestor=postgres:16-alpine --format '{{.ID}}' | head -n 1)"
+          if [ -z "$container_id" ]; then
+            echo "PostgreSQL service container not found" >&2
+            docker ps
+            exit 1
+          fi
+
+          proof="$(
+            docker exec -i "$container_id" psql -U postgres -d freecompute -qAt <<'SQL' | tail -n 1
+          CREATE TABLE compute_proof (
+            id serial PRIMARY KEY,
+            item text NOT NULL,
+            weight integer NOT NULL
+          );
+          INSERT INTO compute_proof (item, weight)
+          VALUES ('runner', 4), ('database', 16), ('proof', 26);
+          SELECT json_build_object(
+            'status', 'secured',
+            'surface', 'github-actions-service-container-postgres',
+            'service', 'postgres:16-alpine',
+            'rows', (SELECT count(*) FROM compute_proof),
+            'weight_sum', (SELECT sum(weight) FROM compute_proof),
+            'max_item', (SELECT item FROM compute_proof ORDER BY weight DESC LIMIT 1),
+            'server_version', current_setting('server_version')
+          )::text;
+          SQL
+          )"
+
+          echo "$proof"
+          echo "$proof" | grep -q '"status" : "secured"'
+          echo "$proof" | grep -q '"surface" : "github-actions-service-container-postgres"'
+          echo "$proof" | grep -q '"rows" : 3'
+          echo "$proof" | grep -q '"weight_sum" : 46'
