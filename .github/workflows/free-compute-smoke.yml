@@ -1,0 +1,35 @@
+name: Free Compute Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  prove-runner:
+    name: Prove public GitHub Actions runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Runner identity
+        run: |
+          echo "RUNNER_OS=${RUNNER_OS}"
+          echo "RUNNER_ARCH=${RUNNER_ARCH}"
+          echo "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"
+          uname -a
+
+      - name: CPU, memory, and disk
+        run: |
+          nproc
+          lscpu | sed -n '1,20p'
+          free -h
+          df -h .
+
+      - name: Python smoke benchmark
+        run: python3 scripts/smoke.py
