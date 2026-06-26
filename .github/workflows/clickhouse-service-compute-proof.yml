@@ -1,0 +1,116 @@
+name: ClickHouse service compute proof
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/clickhouse-service-compute-proof.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  clickhouse-service:
+    name: Verify ClickHouse service container
+    runs-on: ubuntu-latest
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.8-alpine
+        env:
+          CLICKHOUSE_SKIP_USER_SETUP: 1
+        ports:
+          - 8123:8123
+          - 9000:9000
+
+    steps:
+      - name: Verify ClickHouse service compute
+        run: |
+          set -euo pipefail
+          container_id="$(docker ps --filter ancestor=clickhouse/clickhouse-server:24.8-alpine --format '{{.ID}}' | head -n 1)"
+          if [ -z "$container_id" ]; then
+            echo "ClickHouse service container not found" >&2
+            docker ps
+            exit 1
+          fi
+
+          mkdir -p proof
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          endpoint = "http://127.0.0.1:8123/"
+
+          def query(sql):
+              data = sql.encode()
+              req = urllib.request.Request(endpoint, data=data, method="POST")
+              with urllib.request.urlopen(req, timeout=10) as resp:
+                  return resp.read().decode().strip()
+
+          last_error = None
+          for _ in range(60):
+              try:
+                  version = query("SELECT version()")
+                  if version:
+                      break
+              except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+                  last_error = exc
+                  time.sleep(2)
+          else:
+              raise RuntimeError(f"ClickHouse HTTP API never became ready: {last_error}")
+
+          query("DROP TABLE IF EXISTS free_compute_proof")
+          query("""
+          CREATE TABLE free_compute_proof
+          (
+            item String,
+            weight UInt32,
+            created_at DateTime DEFAULT now()
+          )
+          ENGINE = Memory
+          """)
+          query("""
+          INSERT INTO free_compute_proof (item, weight) VALUES
+          ('runner', 7),
+          ('clickhouse-service', 23),
+          ('proof', 37)
+          """)
+          aggregate_json = query("""
+          SELECT
+            'secured' AS status,
+            'github-actions-service-container-clickhouse' AS surface,
+            'clickhouse/clickhouse-server:24.8-alpine' AS service,
+            count() AS rows,
+            sum(weight) AS weight_sum,
+            argMax(item, weight) AS max_item,
+            version() AS server_version,
+            cityHash64(groupArray(item)) AS item_hash
+          FROM free_compute_proof
+          FORMAT JSONEachRow
+          """)
+          proof = json.loads(aggregate_json)
+          proof["created_at_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+          proof["digest"] = hashlib.sha256(json.dumps(proof, sort_keys=True).encode()).hexdigest()
+
+          assert proof["status"] == "secured"
+          assert proof["surface"] == "github-actions-service-container-clickhouse"
+          assert proof["rows"] == 3
+          assert proof["weight_sum"] == 67
+          assert proof["max_item"] == "proof"
+          assert proof["server_version"]
+
+          path = Path("proof/clickhouse-service-proof.json")
+          path.write_text(json.dumps(proof, sort_keys=True) + "\n")
+          print(json.dumps(proof, sort_keys=True))
+          PY
+
+      - name: Upload proof artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clickhouse-service-compute-proof
+          path: proof/clickhouse-service-proof.json
+          retention-days: 30

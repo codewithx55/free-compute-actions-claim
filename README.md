@@ -6,6 +6,7 @@ This repository is a tiny proof that the `codewithx55` GitHub account can run fr
 
 | Surface | Status | Notes |
 |---|---:|---|
+| ClickHouse service container | Claimed when workflow succeeds | The ClickHouse proof starts a `clickhouse/clickhouse-server:24.8-alpine` service container and runs analytical SQL on a hosted runner. |
 | GitHub-hosted Ubuntu runner | Claimed when workflow succeeds | Public repositories can use standard runners for free under GitHub's current billing docs. |
 | Memcached service container | Claimed when workflow succeeds | The Memcached proof starts a `memcached:1.6-alpine` service container and exercises the text protocol on a hosted runner. |
 | MySQL service container | Claimed when workflow succeeds | The MySQL proof starts a `mysql:8.0` service container and runs SQL inside it on a hosted runner. |
