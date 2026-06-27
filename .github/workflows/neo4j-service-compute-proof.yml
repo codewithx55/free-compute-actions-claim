@@ -94,8 +94,9 @@ jobs:
           """)
           counts = cypher("""
           MATCH (n:Compute)
-          OPTIONAL MATCH ()-[r]->()
-          RETURN count(DISTINCT n) AS nodes, count(DISTINCT r) AS relationships, sum(n.weight) AS weight_sum
+          WITH collect(n) AS nodes, sum(n.weight) AS weight_sum
+          MATCH ()-[r]->()
+          RETURN size(nodes) AS nodes, count(r) AS relationships, weight_sum
           """)[0]["row"]
           path_data = cypher("""
           MATCH path = (:Compute {name:'Codex'})-[*1..4]->(:Compute {name:'Proof artifact'})
